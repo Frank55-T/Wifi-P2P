@@ -25,6 +25,9 @@ public class WifiDirectBroadcastReceiver extends BroadcastReceiver {
 
         }else if (WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION.equals(action)){
             //Obtiene una lista de los dispositivos disponibles
+            if (manager!= null){
+                manager.requestPeers(channel, activity.peerListListener);
+            }
 
         }else if (WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION.equals(action)){
             //Responde a nuevas conecciones o desconecciones
