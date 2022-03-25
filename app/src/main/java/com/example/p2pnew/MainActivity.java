@@ -6,12 +6,18 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.net.InetAddresses;
+import android.net.wifi.p2p.WifiP2pConfig;
 import android.net.wifi.p2p.WifiP2pDevice;
 import android.net.wifi.p2p.WifiP2pDeviceList;
+import android.net.wifi.p2p.WifiP2pInfo;
 import android.net.wifi.p2p.WifiP2pManager;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 import android.view.View;
+import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
@@ -19,8 +25,19 @@ import android.widget.ImageButton;
 import android.widget.ListView;
 import android.widget.TextView;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -38,6 +55,14 @@ public class MainActivity extends AppCompatActivity {
     List<WifiP2pDevice> peers = new ArrayList<WifiP2pDevice>();
     String[] deviceNameArray;
     WifiP2pDevice[] deviceArray;
+
+    Socket socket;
+
+    ServerClass serverClass;
+    ClientClass clientClass;
+
+    boolean isHost;
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -69,6 +94,43 @@ public class MainActivity extends AppCompatActivity {
                     @Override
                     public void onFailure(int i) {
                         connectionStatus.setText("No se están buscando dispositivos");
+                    }
+                });
+            }
+        });
+        listView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
+            @Override
+            public void onItemClick(AdapterView<?> adapterView, View view, int i, long l) {
+                final WifiP2pDevice device = deviceArray[i];
+                WifiP2pConfig config = new WifiP2pConfig();
+                config.deviceAddress = device.deviceAddress;
+                manager.connect(channel, config, new WifiP2pManager.ActionListener(){
+                    @Override
+                    public void onSuccess(){
+                        connectionStatus.setText("Conectado: "+device.deviceAddress);
+                    }
+                    @Override
+                    public void onFailure(int i){
+                        connectionStatus.setText("No conectado");
+                    }
+                });
+            }
+
+        });
+
+        sendButton.setOnClickListener(new View.OnClickListener(){
+            @Override
+            public void onClick(View view){
+                ExecutorService executor = Executors.newSingleThreadExecutor();
+                String msg = typeMsg.getText().toString();
+                executor.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (msg!=null && isHost){
+                            serverClass.write(msg.getBytes());
+                        }else if (msg!=null && !isHost){
+                            clientClass.write(msg.getBytes());
+                        }
                     }
                 });
             }
@@ -120,6 +182,24 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
+    WifiP2pManager.ConnectionInfoListener connectionInfoListener = new WifiP2pManager.ConnectionInfoListener() {
+        @Override
+        public void onConnectionInfoAvailable(WifiP2pInfo wifiP2pInfo) {
+            final InetAddress groupOwnerAddresses = wifiP2pInfo.groupOwnerAddress;
+            if(wifiP2pInfo.groupFormed && wifiP2pInfo.isGroupOwner){
+                connectionStatus.setText("Host");
+                isHost=true;
+                serverClass = new ServerClass();
+                serverClass.start();
+            } else if (wifiP2pInfo.groupFormed){
+                connectionStatus.setText("Cliente");
+                isHost=false;
+                clientClass = new ClientClass(groupOwnerAddresses);
+                clientClass.start();
+            }
+        }
+    };
+
     @Override
     protected void onResume() {
         super.onResume();
@@ -130,5 +210,119 @@ public class MainActivity extends AppCompatActivity {
     protected void onPause() {
         super.onPause();
         unregisterReceiver(receiver);
+    }
+
+    public class ServerClass extends Thread{
+        ServerSocket serverSocket;
+        private InputStream inputStream;
+        private OutputStream outputStream;
+
+        public void write(byte[] bytes){
+            try {
+                outputStream.write(bytes);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+
+        @Override
+        public void run() {
+            try {
+                serverSocket = new ServerSocket(8888);
+                socket = serverSocket.accept();
+                inputStream = socket.getInputStream();
+                outputStream = socket.getOutputStream();
+
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+
+            ExecutorService executor = Executors.newSingleThreadExecutor();
+            Handler handler = new Handler(Looper.getMainLooper());
+
+            executor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    byte[] buffer = new byte[1024];
+                    int bytes;
+                    while (socket!=null){
+                        try {
+                            bytes=inputStream.read(buffer);
+                            if (bytes >0){
+                                int finalBytes = bytes;
+                                handler.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        String tempMSG = new String(buffer, 0, finalBytes);
+                                        messageTextView.setText(tempMSG);
+                                    }
+                                });
+                            }
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    public class ClientClass extends Thread{
+        String hostAdd;
+        private InputStream inputStream;
+        private OutputStream outputStream;
+
+        public ClientClass(InetAddress hostAddress) {
+            hostAdd = hostAddress.getHostAddress();
+            socket = new Socket();
+        }
+
+        public void write(byte[] bytes){
+            try {
+                outputStream.write(bytes);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+
+        @Override
+        public void run() {
+            try {
+                socket.connect(new InetSocketAddress(hostAdd, 8888), 500);
+                inputStream = socket.getInputStream();
+                outputStream = socket.getOutputStream();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+
+            ExecutorService executor = Executors.newSingleThreadExecutor();
+            Handler handler = new Handler(Looper.getMainLooper());
+
+            executor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    byte[] buffer = new byte[1024];
+                    int bytes;
+
+                    while (socket!=null){
+                        try {
+                            bytes = inputStream.read(buffer);
+                            if (bytes>0){
+                                int finalBytes = bytes;
+                                handler.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        String tempSMG = new String(buffer, 0, finalBytes);
+                                        messageTextView.setText(tempSMG);
+                                    }
+                                });
+                            }
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                }
+            });
+        }
     }
 }
